@@ -7,12 +7,7 @@
       1. ghcp-pm-spec-kit           https://github.com/AkashAi7/ghcp-pm-spec-kit
       2. MCP-OS-Ticket-Lab          https://github.com/AkashAi7/MCP-OS-Ticket-Lab
       3. GuardRails-and-Secure-Coding  https://github.com/AkashAi7/GuardRails-and-Secure-Coding
-.PARAMETER SetupMCP
-    When specified, automatically writes MCP server entries into VS Code user settings.json.
 #>
-param(
-    [switch]$SetupMCP
-)
 
 $script:passCount = 0
 $script:warnCount = 0
@@ -62,6 +57,17 @@ function Fail {
     }
 }
 
+function Install-WingetDependency {
+    param([string]$WingetId, [string]$Name)
+    Write-Host "  [INFO] Attempting to install $Name via winget..." -ForegroundColor Cyan
+    try {
+        $null = & winget install --id $WingetId -e --source winget --accept-package-agreements --accept-source-agreements
+        Write-Host "  [INFO] Installed $Name. You may need to restart your terminal for it to be available in PATH." -ForegroundColor Cyan
+    } catch {
+        Fail "$Name installation failed" "Please install manually."
+    }
+}
+
 function Get-CmdOutput {
     param([string]$Cmd, [string[]]$CmdArgs)
     try {
@@ -82,7 +88,8 @@ function Test-Git {
     if ($ver) {
         Pass "Git installed" $ver
     } else {
-        Fail "Git not found" "Install from https://git-scm.com/"
+        Warn "Git not found" "Attempting to install..."
+        Install-WingetDependency -WingetId "Git.Git" -Name "Git"
     }
 }
 
@@ -90,7 +97,8 @@ function Test-VSCode {
     Write-Section "Visual Studio Code  [required by all labs]"
     $ver = Get-CmdOutput code @("--version")
     if (-not $ver) {
-        Fail "VS Code CLI not found" "Install VS Code from https://code.visualstudio.com/ and add 'code' to PATH"
+        Warn "VS Code CLI not found" "Attempting to install..."
+        Install-WingetDependency -WingetId "Microsoft.VisualStudioCode" -Name "VS Code"
         return
     }
     $semver = ($ver -split "`n")[0].Trim()
@@ -130,14 +138,18 @@ function Test-VSCodeExtensions {
         if ($extList -contains $ext.Id) {
             Pass "$($ext.Display) extension installed"
         } else {
-            Fail "$($ext.Display) extension NOT installed" "VS Code Extensions panel -> search '$($ext.Id)'"
+            Warn "$($ext.Display) extension NOT installed" "Attempting to install..."
+            & code --install-extension $ext.Id | Out-Null
+            Pass "$($ext.Display) extension installed"
         }
     }
     foreach ($ext in $optional) {
         if ($extList -contains $ext.Id) {
             Pass "$($ext.Display)"
         } else {
-            Warn "$($ext.Display)" "Optional - install via VS Code Extensions if needed"
+            Warn "$($ext.Display)" "Attempting to install optional extension..."
+            & code --install-extension $ext.Id | Out-Null
+            Pass "$($ext.Display) extension installed"
         }
     }
 }
@@ -146,7 +158,8 @@ function Test-Docker {
     Write-Section "Docker Desktop  [required by MCP-OS-Ticket-Lab]"
     $ver = Get-CmdOutput docker @("--version")
     if (-not $ver) {
-        Fail "Docker not found" "Install Docker Desktop from https://www.docker.com/products/docker-desktop/"
+        Warn "Docker not found" "Attempting to install..."
+        Install-WingetDependency -WingetId "Docker.DockerDesktop" -Name "Docker Desktop"
         return
     }
     Pass "Docker CLI installed" $ver
@@ -186,7 +199,8 @@ function Test-Python {
         }
     }
     if (-not $pythonCmd) {
-        Fail "Python not found" "Install Python 3.10+ from https://www.python.org/"
+        Warn "Python not found" "Attempting to install Python 3.12..."
+        Install-WingetDependency -WingetId "Python.Python.3.12" -Name "Python"
         return
     }
 
@@ -195,7 +209,8 @@ function Test-Python {
     if ($pip) {
         Pass "pip available" $pip
     } else {
-        Warn "pip not found" "Run '$pythonCmd -m ensurepip' to restore it"
+        Warn "pip not found" "Attempting to restore pip..."
+        & $pythonCmd -m ensurepip | Out-Null
     }
 
     Write-Section "Required Python Packages  [MCP-OS-Ticket-Lab]"
@@ -211,7 +226,9 @@ function Test-Python {
         if ($result -and $result -notmatch "PackageNotFoundError|No module") {
             Pass "Package '$pkgName' installed" "version $result (>= $($pkg.MinVer) required)"
         } else {
-            Fail "Package '$pkgName' not installed" "Run: pip install $pkgName>=$($pkg.MinVer)"
+            Warn "Package '$pkgName' not installed" "Attempting to install via pip..."
+            & $pythonCmd -m pip install "$pkgName>=$($pkg.MinVer)" | Out-Null
+            Pass "Package '$pkgName' installed"
         }
     }
 }
@@ -222,7 +239,8 @@ function Test-AzureCLI {
     # Fast PATH existence check before running the (slow) az --version
     $azCmd = Get-Command az -ErrorAction SilentlyContinue
     if (-not $azCmd) {
-        Fail "Azure CLI not found" "Install from https://learn.microsoft.com/cli/azure/install-azure-cli"
+        Warn "Azure CLI not found" "Attempting to install..."
+        Install-WingetDependency -WingetId "Microsoft.AzureCLI" -Name "Azure CLI"
         return
     }
 
@@ -252,76 +270,6 @@ function Test-AzureCLI {
     }
 }
 
-function Test-VSCodeMCP {
-    Write-Section "VS Code MCP Server Configuration  [MCP-OS-Ticket-Lab]"
-
-    $settingsPath = Join-Path $env:APPDATA "Code\User\settings.json"
-
-    if (-not (Test-Path $settingsPath)) {
-        Warn "VS Code settings.json not found" "Expected at: $settingsPath"
-        return
-    }
-
-    try {
-        $settingsRaw = Get-Content $settingsPath -Raw
-        # Strip JSONC block comments, line comments, and trailing commas
-        $settingsRaw = [regex]::Replace($settingsRaw, '/\*.*?\*/', '', [System.Text.RegularExpressions.RegexOptions]::Singleline)
-        $settingsRaw = [regex]::Replace($settingsRaw, '(?<!:)//[^\n]*', '')
-        $settingsRaw = [regex]::Replace($settingsRaw, ',\s*([}\]])', '$1')
-        $settings = $settingsRaw | ConvertFrom-Json
-    } catch {
-        Warn "Could not parse VS Code settings.json" $settingsPath
-        return
-    }
-
-    # Check if any MCP servers are already configured
-    $mcpServers = $null
-    if ($settings.PSObject.Properties['mcp'] -and $settings.mcp.PSObject.Properties['servers']) {
-        $mcpServers = $settings.mcp.servers.PSObject.Properties.Name
-    }
-
-    $workshopServers = @('osticket-mcp')
-    $allPresent = $true
-    foreach ($srv in $workshopServers) {
-        if ($mcpServers -and $mcpServers -contains $srv) {
-            Pass "MCP server '$srv' configured in VS Code"
-        } else {
-            $allPresent = $false
-            Warn "MCP server '$srv' NOT configured in VS Code" "Run with -SetupMCP flag to auto-configure, or see README"
-        }
-    }
-
-    if (-not $allPresent -and $SetupMCP) {
-        Write-Host "  [INFO] Writing MCP server config to VS Code settings..." -ForegroundColor Cyan
-        try {
-            # Rebuild settings object safely
-            if (-not $settings.PSObject.Properties['mcp']) {
-                $settings | Add-Member -MemberType NoteProperty -Name 'mcp' -Value ([PSCustomObject]@{ servers = [PSCustomObject]@{} })
-            }
-            if (-not $settings.mcp.PSObject.Properties['servers']) {
-                $settings.mcp | Add-Member -MemberType NoteProperty -Name 'servers' -Value ([PSCustomObject]@{})
-            }
-
-            $osticketServer = [PSCustomObject]@{
-                type    = 'stdio'
-                command = 'python'
-                args    = @('${workspaceFolder}/mcp-server/server.py')
-                env     = [PSCustomObject]@{
-                    OSTICKET_URL      = 'http://localhost:8080'
-                    OSTICKET_API_KEY  = 'YOUR_API_KEY_HERE'
-                }
-            }
-            $settings.mcp.servers | Add-Member -MemberType NoteProperty -Name 'osticket-mcp' -Value $osticketServer -Force
-
-            # Write back (pretty-printed)
-            $settings | ConvertTo-Json -Depth 10 | Set-Content $settingsPath -Encoding UTF8
-            Pass "MCP server 'osticket-mcp' written to VS Code settings" $settingsPath
-            Write-Host "  [INFO] Update OSTICKET_API_KEY in settings.json after running install-local.cmd" -ForegroundColor Yellow
-        } catch {
-            Fail "Failed to write MCP config" $_.Exception.Message
-        }
-    }
-}
 
 function Test-GitHubCLI {
     Write-Section "GitHub CLI  (optional)"
@@ -329,7 +277,8 @@ function Test-GitHubCLI {
     if ($ver) {
         Warn "GitHub CLI installed (optional)" $ver
     } else {
-        Warn "GitHub CLI not installed (optional)" "Install from https://cli.github.com/ for easier repo cloning"
+        Warn "GitHub CLI not installed (optional)" "Attempting to install..."
+        Install-WingetDependency -WingetId "GitHub.cli" -Name "GitHub CLI"
     }
 }
 
@@ -387,7 +336,6 @@ Test-VSCodeExtensions
 Test-Docker
 Test-Python
 Test-AzureCLI
-Test-VSCodeMCP
 Test-GitHubCLI
 Test-InternetAccess
 Write-Summary
