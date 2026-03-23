@@ -59,9 +59,10 @@ function Fail {
 
 function Install-WingetDependency {
     param([string]$WingetId, [string]$Name)
-    Write-Host "  [INFO] Attempting to install $Name via winget..." -ForegroundColor Cyan
+    Write-Host "  [INFO] Attempting to install $Name via winget... (This may take several minutes for large packages)" -ForegroundColor Cyan
     try {
-        $null = & winget install --id $WingetId -e --source winget --accept-package-agreements --accept-source-agreements
+        # Added --silent to prevent the progress bar from slowing down the terminal rendering
+        $null = & winget install --id $WingetId -e --source winget --accept-package-agreements --accept-source-agreements --silent
         Write-Host "  [INFO] Installed $Name. You may need to restart your terminal for it to be available in PATH." -ForegroundColor Cyan
     } catch {
         Fail "$Name installation failed" "Please install manually."
